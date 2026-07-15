@@ -1,0 +1,128 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 1. Global Default Deny Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Global Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && (
+        request.auth.token.email_verified == true || 
+        request.auth.token.firebase.sign_in_provider == 'google.com'
+      );
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Entity Validation Helpers ---
+    function isValidUserProfile(data) {
+      return data.uid is string && data.uid.size() <= 128 &&
+             data.email is string && data.email.size() <= 256 &&
+             (data.displayName == null || (data.displayName is string && data.displayName.size() <= 128)) &&
+             (data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 512)) &&
+             (data.generationCount == null || data.generationCount is int) &&
+             (data.tier == null || (data.tier is string && (data.tier == 'free' || data.tier == 'premium')));
+    }
+
+    function isValidGeneratedIdea(data) {
+      return data.id is string && data.id.size() <= 128 &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.mode is string && (data.mode == 'hackathon' || data.mode == 'startup' || data.mode == 'organizer') &&
+             data.title is string && data.title.size() <= 200 &&
+             data.tagline is string && data.tagline.size() <= 500 &&
+             data.inputs is map &&
+             data.output is map &&
+             data.isBookmarked is bool;
+    }
+
+    // --- Collections ---
+
+    // 2. User Profiles
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      
+      // Creating a profile
+      allow create: if isOwner(userId) && 
+                      isEmailVerified() && 
+                      isValidUserProfile(incoming()) && 
+                      incoming().uid == userId && 
+                      incoming().email == request.auth.token.email &&
+                      incoming().createdAt == request.time &&
+                      incoming().updatedAt == request.time &&
+                      (incoming().tier == 'free' || incoming().tier == null) && // Users cannot self-assign premium
+                      incoming().keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt']);
+
+      // Updating a profile (strict field changes)
+      allow update: if isOwner(userId) && 
+                      isEmailVerified() && 
+                      isValidUserProfile(incoming()) &&
+                      incoming().uid == existing().uid &&
+                      incoming().email == existing().email &&
+                      incoming().createdAt == existing().createdAt &&
+                      incoming().updatedAt == request.time &&
+                      (
+                        // Allow modifying displayName, photoURL, generationCount, updatedAt
+                        incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'generationCount', 'updatedAt']) ||
+                        // Admin overrides tier (we keep it simple since we don't have secondary admin collection right now)
+                        (incoming().diff(existing()).affectedKeys().hasOnly(['tier', 'updatedAt']) && existing().tier == 'premium')
+                      );
+    }
+
+    // 3. Generated Ideas
+    match /ideas/{ideaId} {
+      // Securing list queries: Must strictly filter by userId
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn() && 
+                      isEmailVerified() &&
+                      isValidId(ideaId) &&
+                      isValidGeneratedIdea(incoming()) &&
+                      incoming().userId == request.auth.uid &&
+                      incoming().id == ideaId &&
+                      incoming().createdAt == request.time &&
+                      incoming().updatedAt == request.time &&
+                      incoming().keys().hasAll(['id', 'userId', 'mode', 'title', 'tagline', 'inputs', 'output', 'isBookmarked', 'createdAt', 'updatedAt']) &&
+                      incoming().keys().size() == 10;
+
+      allow update: if isSignedIn() && 
+                      isEmailVerified() &&
+                      isValidId(ideaId) &&
+                      isValidGeneratedIdea(incoming()) &&
+                      incoming().userId == existing().userId &&
+                      incoming().id == existing().id &&
+                      incoming().createdAt == existing().createdAt &&
+                      incoming().updatedAt == request.time &&
+                      (
+                        // Action 1: Toggle bookmark
+                        incoming().diff(existing()).affectedKeys().hasOnly(['isBookmarked', 'updatedAt']) ||
+                        // Action 2: Rename title or tagline
+                        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'tagline', 'updatedAt'])
+                      );
+
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+  }
+}

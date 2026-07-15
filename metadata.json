@@ -1,0 +1,6 @@
+{
+  "name": "Ideathonix AI",
+  "description": "From Problem to Winning Ideas. An elite, premium, AI-powered SaaS platform for generating, evaluating, and structuring high-impact hackathon projects, startups, and organizer challenges.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
